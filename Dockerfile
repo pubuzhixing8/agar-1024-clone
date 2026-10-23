@@ -1,15 +1,15 @@
-FROM node:14-alpine
+FROM node:20-bookworm-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
 
-RUN mkdir -p /usr/src/app
-WORKDIR /usr/src/app
-
-COPY package.json /usr/src/app/
-RUN npm install && npm cache clean --force
-COPY . /usr/src/app
-
-CMD [ "npm", "start" ]
-
-HEALTHCHECK  --interval=5m --timeout=3s \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1
-
+FROM node:20-bookworm-slim
+WORKDIR /app
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/bin ./bin
+COPY --from=build /app/config.js ./config.js
+ENV NODE_ENV=production PORT=3000
 EXPOSE 3000
+CMD ["node", "bin/server/server.js"]

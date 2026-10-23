@@ -1,0 +1,32 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "agar-1024-game",
+  "main": "./worker.js",
+  "compatibility_date": "2026-10-22",
+  "workers_dev": true,
+  "containers": [
+    {
+      "class_name": "AgarGame",
+      "image": "../Dockerfile",
+      "instance_type": "basic",
+      "max_instances": 2,
+      "constraints": {
+        "regions": ["APAC"]
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AGAR_GAME",
+        "class_name": "AgarGame"
+      }
+    ]
+  },
+  "exports": {
+    "AgarGame": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  }
+}

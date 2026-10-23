@@ -1,3 +1,5 @@
+const crypto = require('crypto');
+
 module.exports = {
     host: "0.0.0.0",
     port: 3000,
@@ -19,7 +21,7 @@ module.exports = {
 	},
     gameWidth: 5000,
     gameHeight: 5000,
-    adminPass: "DEFAULT",
+    adminPass: process.env.ADMIN_PASS || crypto.randomBytes(32).toString('hex'),
     gameMass: 20000,
     maxFood: 1000,
     maxVirus: 50,

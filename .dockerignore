@@ -1,5 +1,5 @@
 node_modules
-npm-debug.log
-.idea
-client/bower_components
+cloudflare/node_modules
+.git
 bin
+*.sqlite3
