@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <!-- Meta Properties -->
     <meta charset="UTF-8">
-    <title>Open Agar</title>
+    <title>1024 吞噬大战</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no">
     <!-- CSS -->
     <link rel="stylesheet" href="css/main.css" />
@@ -13,10 +13,10 @@
 </head>
 <body>
     <div id="gameAreaWrapper">
-        <div id="status"><span class="title">Leaderboard</span></div>
+        <div id="status"><span class="title">排行榜</span></div>
         <div class="chatbox" id="chatbox">
             <ul id="chatList" class="chat-list"></ul>
-            <input id="chatInput" type="text" class="chat-input" placeholder="Chat here..." maxlength="35" />
+            <input id="chatInput" type="text" class="chat-input" placeholder="输入聊天内容..." maxlength="35" />
         </div>
         <div id="mobile">
            <input type="image" id="split" class="split" src="img/split.png" alt="splitBtn">
@@ -26,39 +26,38 @@
     </div>
     <div id="startMenuWrapper">
         <div id="startMenu">
-            <p>Open Agar</p>
-            <input type="text" tabindex="0" autofocus placeholder="Enter your name here" id="playerNameInput" maxlength="25" />
-            <b class="input-error">Nick must be alphanumeric characters only!</b>
+            <p>1024 吞噬大战</p>
+            <input type="text" tabindex="0" autofocus placeholder="输入昵称" id="playerNameInput" maxlength="25" />
+            <b class="input-error">昵称只能使用中文、字母、数字和下划线</b>
             <br />
-            <a onclick="document.getElementById('spawn_cell').play();"><button id="startButton">Play</button></a>
-            <button id="spectateButton">Spectate</button>
-            <button id="settingsButton">Settings</button>
+            <a onclick="document.getElementById('spawn_cell').play();"><button id="startButton">开始游戏</button></a>
+            <button id="spectateButton">观战</button>
+            <button id="settingsButton">设置</button>
             <br />
             <div id="settings">
-                <h3>Settings</h3>
+                <h3>设置</h3>
                 <ul>
-                    <label><input id="visBord" type="checkbox">Show border</label>
-                    <label><input id="showMass" type="checkbox">Show mass</label>
+                    <label><input id="visBord" type="checkbox">显示边界</label>
+                    <label><input id="showMass" type="checkbox">显示体积</label>
                     <br />
-                    <label><input id="continuity" type="checkbox">Continue moving when mouse is off-screen</label>
+                    <label><input id="continuity" type="checkbox">鼠标移出屏幕后继续移动</label>
                     <br />
-                    <label><input id="roundFood" type="checkbox" checked>Rounded food</label>
-                    <label><input id="darkMode" type="checkbox">Toggle Dark Mode</label>
+                    <label><input id="roundFood" type="checkbox" checked>圆形食物</label>
+                    <label><input id="darkMode" type="checkbox">深色模式</label>
                 </ul>
             </div>
             <div id="instructions">
-                <h3>Gameplay</h3>
+                <h3>玩法</h3>
                 <ul>
-                    <li>Move your mouse on the screen to move your character.</li>
-                    <li>Eat food and other players in order to grow your character (food respawns every time a player eats it).</li>
-                    <li>A player's mass is the number of food particles eaten.</li>
-                    <li>Objective: Try to get fat and eat other players.</li>
+                    <li>移动鼠标控制方向；手机上用触屏控制。</li>
+                    <li>吃掉食物和比自己小的玩家来变大。</li>
+                    <li>体积越大，移动越慢。</li>
+                    <li>目标：活下来，冲上排行榜。</li>
                 </ul>
             </div>
         </div>
     </div>
     <!-- JS -->
-    <script src="//code.jquery.com/jquery-2.2.0.min.js"></script>
     <script src="js/app.js"></script>
 </body>
 </html>

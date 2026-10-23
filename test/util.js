@@ -49,6 +49,10 @@ describe('util.js', () => {
       expect(n5).to.be.true;
     });
 
+    it('should allow Chinese player nicknames', () => {
+      expect(util.validNick('程序员1024')).to.be.true;
+    });
+
     it('should disallow unicode-dependent alphabets', () => {
       var n1 = util.validNick('Йèæü');
 

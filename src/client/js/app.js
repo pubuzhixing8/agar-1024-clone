@@ -41,7 +41,7 @@ function startGame(type) {
 
 // Checks if the nick chosen contains valid alphanumeric characters (and underscores).
 function validNick() {
-    var regex = /^\w*$/;
+    var regex = /^[\w\u3400-\u9fff]*$/;
     debug('Regex Test', regex.exec(playerNameInput.value));
     return regex.exec(playerNameInput.value) !== null;
 }
@@ -138,12 +138,12 @@ roundFoodSetting.onchange = settings.toggleRoundFood;
 var c = window.canvas.cv;
 var graph = c.getContext('2d');
 
-$("#feed").click(function () {
+document.getElementById('feed').addEventListener('click', function () {
     socket.emit('1');
     window.canvas.reenviar = false;
 });
 
-$("#split").click(function () {
+document.getElementById('split').addEventListener('click', function () {
     socket.emit('2');
     window.canvas.reenviar = false;
 });
@@ -151,7 +151,7 @@ $("#split").click(function () {
 function handleDisconnect() {
     socket.close();
     if (!global.kicked) { // We have a more specific error message 
-        render.drawErrorMessage('Disconnected!', graph, global.screen);
+        render.drawErrorMessage('连接已断开', graph, global.screen);
     }
 }
 
@@ -179,8 +179,8 @@ function setupSocket(socket) {
         window.chat.player = player;
         socket.emit('gotit', player);
         global.gameStart = true;
-        window.chat.addSystemLine('Connected to the game!');
-        window.chat.addSystemLine('Type <b>-help</b> for a list of commands.');
+        window.chat.addSystemLine('已进入游戏！');
+        window.chat.addSystemLine('输入 <b>-help</b> 查看命令。');
         if (global.mobile) {
             document.getElementById('gameAreaWrapper').removeChild(document.getElementById('chatbox'));
         }
@@ -191,7 +191,7 @@ function setupSocket(socket) {
     });
 
     socket.on('playerDied', (data) => {
-        const player = isUnnamedCell(data.playerEatenName) ? 'An unnamed cell' : data.playerEatenName;
+        const player = isUnnamedCell(data.playerEatenName) ? '匿名玩家' : data.playerEatenName;
         //const killer = isUnnamedCell(data.playerWhoAtePlayerName) ? 'An unnamed cell' : data.playerWhoAtePlayerName;
 
         //window.chat.addSystemLine('{GAME} - <b>' + (player) + '</b> was eaten by <b>' + (killer) + '</b>');
@@ -199,28 +199,28 @@ function setupSocket(socket) {
     });
 
     socket.on('playerDisconnect', (data) => {
-        window.chat.addSystemLine('{GAME} - <b>' + (isUnnamedCell(data.name) ? 'An unnamed cell' : data.name) + '</b> disconnected.');
+        window.chat.addSystemLine('{GAME} - <b>' + (isUnnamedCell(data.name) ? '匿名玩家' : data.name) + '</b> 离开了游戏。');
     });
 
     socket.on('playerJoin', (data) => {
-        window.chat.addSystemLine('{GAME} - <b>' + (isUnnamedCell(data.name) ? 'An unnamed cell' : data.name) + '</b> joined.');
+        window.chat.addSystemLine('{GAME} - <b>' + (isUnnamedCell(data.name) ? '匿名玩家' : data.name) + '</b> 加入了游戏。');
     });
 
     socket.on('leaderboard', (data) => {
         leaderboard = data.leaderboard;
-        var status = '<span class="title">Leaderboard</span>';
+        var status = '<span class="title">排行榜</span>';
         for (var i = 0; i < leaderboard.length; i++) {
             status += '<br />';
             if (leaderboard[i].id == player.id) {
                 if (leaderboard[i].name.length !== 0)
                     status += '<span class="me">' + (i + 1) + '. ' + leaderboard[i].name + "</span>";
                 else
-                    status += '<span class="me">' + (i + 1) + ". An unnamed cell</span>";
+                    status += '<span class="me">' + (i + 1) + ". 匿名玩家</span>";
             } else {
                 if (leaderboard[i].name.length !== 0)
                     status += (i + 1) + '. ' + leaderboard[i].name;
                 else
-                    status += (i + 1) + '. An unnamed cell';
+                    status += (i + 1) + '. 匿名玩家';
             }
         }
         //status += '<br />Players: ' + data.players;
@@ -254,7 +254,7 @@ function setupSocket(socket) {
     // Death.
     socket.on('RIP', function () {
         global.gameStart = false;
-        render.drawErrorMessage('You died!', graph, global.screen);
+        render.drawErrorMessage('你被吃掉了！', graph, global.screen);
         window.setTimeout(() => {
             document.getElementById('gameAreaWrapper').style.opacity = 0;
             document.getElementById('startMenuWrapper').style.maxHeight = '1000px';

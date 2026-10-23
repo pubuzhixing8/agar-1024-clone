@@ -5,7 +5,7 @@
 const cfg = require('../../../config');
 
 exports.validNick = function (nickname) {
-    var regex = /^\w*$/;
+    var regex = /^[\w\u3400-\u9fff]*$/;
     return regex.exec(nickname) !== null;
 };
 
