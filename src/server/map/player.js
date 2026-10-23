@@ -4,12 +4,15 @@ const util = require('../lib/util');
 const sat = require('sat');
 const gameLogic = require('../game-logic');
 
-const MIN_SPEED = 6.25;
+const config = require('../../../config');
+const MIN_SPEED = config.baseCellSpeed;
 const SPLIT_CELL_SPEED = 20;
 const SPEED_DECREMENT = 0.5;
 const MIN_DISTANCE = 50;
 const PUSHING_AWAY_SPEED = 1.1;
 const MERGE_TIMER = 15;
+const MERGE_PULL_SPEED = 10;
+const CENTER_MERGE_HOLD_MS = 1500;
 
 class Cell {
     constructor(x, y, mass, speed) {
@@ -55,9 +58,10 @@ class Cell {
         if (this.speed > MIN_SPEED) {
             this.speed -= SPEED_DECREMENT;
         }
-        if (dist < (MIN_DISTANCE + this.radius)) {
-            deltaY *= dist / (MIN_DISTANCE + this.radius);
-            deltaX *= dist / (MIN_DISTANCE + this.radius);
+        const steeringDistance = MIN_DISTANCE + Math.min(this.radius, config.maxSteeringRadius);
+        if (dist < steeringDistance) {
+            deltaY *= dist / steeringDistance;
+            deltaX *= dist / steeringDistance;
         }
 
         if (!isNaN(deltaY)) {
@@ -104,6 +108,8 @@ exports.Player = class {
             x: 0,
             y: 0
         };
+        this.mergeHeld = false;
+        this.mergeHoldStartedAt = null;
     }
 
     clientProvidedData(playerData) {
@@ -119,6 +125,17 @@ exports.Player = class {
 
     setLastSplit() {
         this.timeToMerge = Date.now() + 1000 * MERGE_TIMER;
+        this.mergeHoldStartedAt = null;
+    }
+
+    setMergeHeld(held) {
+        if (!held || this.cells.length < 2) {
+            this.mergeHeld = false;
+            this.mergeHoldStartedAt = null;
+        } else if (!this.mergeHeld || this.mergeHoldStartedAt === null) {
+            this.mergeHeld = true;
+            this.mergeHoldStartedAt = Date.now();
+        }
     }
 
     loseMassIfNeeded(massLossRate, defaultPlayerMass, minMassLoss) {
@@ -233,14 +250,50 @@ exports.Player = class {
         });
     }
 
+    pullCellsTogether() {
+        for (const cell of this.cells) {
+            const dx = this.x - cell.x;
+            const dy = this.y - cell.y;
+            const distance = Math.hypot(dx, dy);
+            if (!distance) continue;
+            const step = Math.min(MERGE_PULL_SPEED, distance);
+            cell.x += dx / distance * step;
+            cell.y += dy / distance * step;
+        }
+    }
+
+    mergeAllCells() {
+        const totalMass = this.cells.reduce((sum, cell) => sum + cell.mass, 0);
+        const x = this.cells.reduce((sum, cell) => sum + cell.x * cell.mass, 0) / totalMass;
+        const y = this.cells.reduce((sum, cell) => sum + cell.y * cell.mass, 0) / totalMass;
+        const merged = this.cells[0];
+        merged.x = x;
+        merged.y = y;
+        merged.speed = MIN_SPEED;
+        merged.setMass(totalMass);
+        this.cells = [merged];
+        this.massTotal = totalMass;
+        this.x = x;
+        this.y = y;
+        this.setMergeHeld(false);
+    }
+
     move(slowBase, gameWidth, gameHeight, initMassLog) {
+        const now = Date.now();
+        if (this.mergeHeld && now - this.lastHeartbeat > 500) this.setMergeHeld(false);
+        const centerHoldComplete = this.mergeHeld && this.cells.length > 1 &&
+            now - this.mergeHoldStartedAt >= CENTER_MERGE_HOLD_MS;
+        if (centerHoldComplete) this.mergeAllCells();
+        const canMerge = this.cells.length > 1 && this.timeToMerge < now;
         if (this.cells.length > 1) {
-            if (this.timeToMerge < Date.now()) {
+            if (canMerge) {
                 this.mergeCollidingCells();
-            } else {
+            } else if (!this.mergeHeld) {
                 this.pushAwayCollidingCells();
             }
         }
+
+        if ((canMerge || this.mergeHeld) && this.cells.length > 1) this.pullCellsTogether();
 
         let xSum = 0, ySum = 0;
         for (let i = 0; i < this.cells.length; i++) {
@@ -253,6 +306,14 @@ exports.Player = class {
         }
         this.x = xSum / this.cells.length;
         this.y = ySum / this.cells.length;
+        if (canMerge && this.cells.length > 1) {
+            const previousCellCount = this.cells.length;
+            this.mergeCollidingCells();
+            if (this.cells.length !== previousCellCount) {
+                this.x = this.cells.reduce((sum, cell) => sum + cell.x, 0) / this.cells.length;
+                this.y = this.cells.reduce((sum, cell) => sum + cell.y, 0) / this.cells.length;
+            }
+        }
     }
 
     // Calls `callback` if any of the two cells ate the other.

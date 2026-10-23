@@ -122,7 +122,11 @@ const addPlayer = (socket) => {
         }
         socket.emit('welcome', currentPlayer, {
             width: config.gameWidth,
-            height: config.gameHeight
+            height: config.gameHeight,
+            slowBase: config.slowBase,
+            defaultPlayerMass: config.defaultPlayerMass,
+            baseCellSpeed: config.baseCellSpeed,
+            maxSteeringRadius: config.maxSteeringRadius
         }, {
             resumed: resuming,
             resumeToken: currentPlayer.resumeToken
@@ -220,8 +224,10 @@ const addPlayer = (socket) => {
 
     // Heartbeat function, update everytime.
     socket.on('0', (target) => {
+        if (!target || !Number.isFinite(target.x) || !Number.isFinite(target.y)) return;
         diagnostics.recordInput(socket);
         currentPlayer.lastHeartbeat = new Date().getTime();
+        currentPlayer.setMergeHeld(target.mergeHeld === true);
         if (target.x !== currentPlayer.x || target.y !== currentPlayer.y) {
             currentPlayer.target = target;
         }

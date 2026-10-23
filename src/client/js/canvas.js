@@ -3,6 +3,7 @@ var global = require('./global');
 class Canvas {
     constructor(params) {
         this.directionLock = false;
+        this.pointerInside = false;
         this.target = global.target;
         this.reenviar = true;
         this.socket = global.socket;
@@ -22,6 +23,7 @@ class Canvas {
         this.cv.addEventListener('keydown', this.directionDown, false);
         this.cv.addEventListener('touchstart', this.touchInput, false);
         this.cv.addEventListener('touchmove', this.touchInput, false);
+        this.cv.addEventListener('touchend', function () { self.pointerInside = false; }, false);
         this.cv.parent = self;
         global.canvas = this;
     }
@@ -34,7 +36,6 @@ class Canvas {
     		self.directionLock = true;
     		if (self.newDirection(key, self.directions, true)) {
     			self.updateTarget(self.directions);
-    			self.socket.emit('0', self.target);
     		}
     	}
     }
@@ -46,7 +47,6 @@ class Canvas {
     		if (this.newDirection(key, this.directions, false)) {
     			this.updateTarget(this.directions);
     			if (this.directions.length === 0) this.directionLock = false;
-    			this.socket.emit('0', this.target);
     		}
     	}
     }
@@ -109,6 +109,7 @@ class Canvas {
 
     // Register when the mouse goes off the canvas.
     outOfBounds() {
+        this.parent.pointerInside = false;
         if (!global.continuity) {
             this.parent.target = { x : 0, y: 0 };
             global.target = this.parent.target;
@@ -116,6 +117,7 @@ class Canvas {
     }
 
     gameInput(mouse) {
+        this.parent.pointerInside = true;
     	if (!this.directionLock) {
     		this.parent.target.x = mouse.clientX - this.width / 2;
     		this.parent.target.y = mouse.clientY - this.height / 2;
@@ -126,6 +128,7 @@ class Canvas {
     touchInput(touch) {
         touch.preventDefault();
         touch.stopPropagation();
+        this.parent.pointerInside = true;
     	if (!this.directionLock) {
     		this.parent.target.x = touch.touches[0].clientX - this.width / 2;
     		this.parent.target.y = touch.touches[0].clientY - this.height / 2;

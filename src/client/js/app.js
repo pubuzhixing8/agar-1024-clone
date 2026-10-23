@@ -10,6 +10,13 @@ var lastTargetSentAt = 0;
 var lastTargetX = null;
 var lastTargetY = null;
 var lastServerUpdateAt = 0;
+var visualX = null;
+var visualY = null;
+var lastVisualAt = 0;
+var movementSlowBase = 4.5;
+var movementInitialMass = 10;
+var movementBaseSpeed = 6.25;
+var maxSteeringRadius = Infinity;
 var diagnosticsWindowStartedAt = Date.now();
 var diagnosticsLastFrameAt = 0;
 var diagnosticsCounters = { updates: 0, frames: 0, inputs: 0, maxUpdateGapMs: 0, maxFrameGapMs: 0 };
@@ -185,23 +192,33 @@ document.getElementById('split').addEventListener('click', function () {
 function handleDisconnect() {
     if (global.kicked) return;
     global.gameStart = false;
+    visualX = null;
+    visualY = null;
     var status = document.getElementById('connectionStatus');
     status.textContent = '连接已断开，正在重连…';
     status.hidden = false;
 }
 
 function sendTargetIfNeeded() {
-    if (!socket || !socket.connected) return;
+    if (!global.gameStart || !socket || !socket.connected) return;
     var now = Date.now();
     var target = window.canvas.target;
     var changed = target.x !== lastTargetX || target.y !== lastTargetY;
     if (now - lastTargetSentAt < (changed ? 50 : 250)) return;
-    socket.emit('0', target);
+    // Only the newest direction matters after a slow connection recovers.
+    socket.volatile.emit('0', {
+        x: target.x,
+        y: target.y,
+        mergeHeld: window.canvas.pointerInside && Math.hypot(target.x, target.y) <= 60
+    });
     diagnosticsCounters.inputs++;
     lastTargetSentAt = now;
     lastTargetX = target.x;
     lastTargetY = target.y;
 }
+
+// Keep input delivery independent from canvas rendering and its frame rate.
+window.setInterval(sendTargetIfNeeded, 50);
 
 window.setInterval(function () {
     if (!global.gameStart || !lastServerUpdateAt || !socket) return;
@@ -278,6 +295,12 @@ function setupSocket(socket) {
         global.gameStart = true;
         lastServerUpdateAt = Date.now();
         lastTargetSentAt = 0;
+        visualX = null;
+        visualY = null;
+        movementSlowBase = gameSizes.slowBase || 4.5;
+        movementInitialMass = gameSizes.defaultPlayerMass || 10;
+        movementBaseSpeed = gameSizes.baseCellSpeed || 6.25;
+        maxSteeringRadius = gameSizes.maxSteeringRadius || Infinity;
         document.getElementById('connectionStatus').hidden = true;
         window.chat.addSystemLine(resume && resume.resumed ? '连接已恢复，继续游戏！' : '已进入游戏！');
         if (previousToken && resume && !resume.resumed) {
@@ -363,6 +386,8 @@ function setupSocket(socket) {
     socket.on('RIP', function () {
         clearSession();
         global.gameStart = false;
+        visualX = null;
+        visualY = null;
         render.drawErrorMessage('你被吃掉了！', graph, global.screen);
         window.setTimeout(() => {
             document.getElementById('gameAreaWrapper').style.opacity = 0;
@@ -421,31 +446,66 @@ function animloop() {
     gameLoop();
 }
 
+function getVisualPlayer(now) {
+    var desiredX = player.x;
+    var desiredY = player.y;
+    // Prediction changes only the camera and the local cell's drawing position.
+    // The authoritative player and collision state are never modified here.
+    if (global.playerType === 'player' && player.cells && player.cells.length === 1 && lastServerUpdateAt) {
+        var cell = player.cells[0];
+        var input = window.canvas.target;
+        var distance = Math.hypot(input.x, input.y);
+        var radius = cell.radius;
+        if (distance > 0 && Number.isFinite(distance) && Number.isFinite(cell.mass)) {
+            var slowDown = Math.log(cell.mass / movementInitialMass) / Math.log(movementSlowBase) + 1;
+            var speed = movementBaseSpeed / Math.max(1, slowDown);
+            var nearTarget = Math.min(1, distance / (50 + Math.min(radius, maxSteeringRadius)));
+            var ticks = Math.min(300, Math.max(0, now - lastServerUpdateAt)) * 60 / 1000;
+            desiredX += input.x / distance * speed * nearTarget * ticks;
+            desiredY += input.y / distance * speed * nearTarget * ticks;
+            var boundary = radius * 4 / 3;
+            desiredX = Math.max(boundary, Math.min(global.game.width - boundary, desiredX));
+            desiredY = Math.max(boundary, Math.min(global.game.height - boundary, desiredY));
+        }
+    }
+    if (visualX === null || visualY === null || now - lastVisualAt > 500) {
+        visualX = desiredX;
+        visualY = desiredY;
+    } else {
+        var blend = 1 - Math.exp(-(now - lastVisualAt) / 35);
+        visualX += (desiredX - visualX) * blend;
+        visualY += (desiredY - visualY) * blend;
+    }
+    lastVisualAt = now;
+    return { x: visualX, y: visualY };
+}
+
 function gameLoop() {
     if (global.gameStart) {
+        var viewPlayer = getVisualPlayer(Date.now());
         graph.fillStyle = global.backgroundColor;
         graph.fillRect(0, 0, global.screen.width, global.screen.height);
 
-        render.drawGrid(global, player, global.screen, graph);
+        render.drawGrid(global, viewPlayer, global.screen, graph);
         foods.forEach(food => {
-            let position = getPosition(food, player, global.screen);
+            let position = getPosition(food, viewPlayer, global.screen);
             render.drawFood(position, food, graph);
         });
         fireFood.forEach(fireFood => {
-            let position = getPosition(fireFood, player, global.screen);
+            let position = getPosition(fireFood, viewPlayer, global.screen);
             render.drawFireFood(position, fireFood, playerConfig, graph);
         });
         viruses.forEach(virus => {
-            let position = getPosition(virus, player, global.screen);
+            let position = getPosition(virus, viewPlayer, global.screen);
             render.drawVirus(position, virus, graph);
         });
 
 
         let borders = { // Position of the borders on the screen
-            left: global.screen.width / 2 - player.x,
-            right: global.screen.width / 2 + global.game.width - player.x,
-            top: global.screen.height / 2 - player.y,
-            bottom: global.screen.height / 2 + global.game.height - player.y
+            left: global.screen.width / 2 - viewPlayer.x,
+            right: global.screen.width / 2 + global.game.width - viewPlayer.x,
+            top: global.screen.height / 2 - viewPlayer.y,
+            bottom: global.screen.height / 2 + global.game.height - viewPlayer.y
         }
         if (global.borderDraw) {
             render.drawBorder(borders, graph);
@@ -462,8 +522,8 @@ function gameLoop() {
                     mass: users[i].cells[j].mass,
                     name: users[i].name,
                     radius: users[i].cells[j].radius,
-                    x: users[i].cells[j].x - player.x + global.screen.width / 2,
-                    y: users[i].cells[j].y - player.y + global.screen.height / 2
+                    x: users[i].cells[j].x - viewPlayer.x + global.screen.width / 2 + (users[i].id === player.id ? viewPlayer.x - player.x : 0),
+                    y: users[i].cells[j].y - viewPlayer.y + global.screen.height / 2 + (users[i].id === player.id ? viewPlayer.y - player.y : 0)
                 });
             }
         }
@@ -472,7 +532,6 @@ function gameLoop() {
         });
         render.drawCells(cellsToDraw, playerConfig, global.toggleMassState, borders, graph);
 
-        sendTargetIfNeeded();
     }
 }
 
