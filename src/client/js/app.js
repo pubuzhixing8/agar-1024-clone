@@ -237,6 +237,9 @@ window.setInterval(function () {
 // socket stuff.
 function setupSocket(socket) {
     var hasConnected = false;
+    socket.on('diagnosticPing', function (reply) {
+        if (typeof reply === 'function') reply();
+    });
     socket.on('connect', function () {
         if (hasConnected && !global.kicked) {
             socket.emit('respawn', { resumeToken: readSession(RESUME_TOKEN_KEY) });

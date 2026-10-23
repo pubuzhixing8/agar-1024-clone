@@ -16,6 +16,7 @@ for (let index = 0; index < count; index++) {
     let lastUpdate = 0;
     let moveTimer;
     socket.on('connect', () => { results.connected++; socket.emit('respawn', {}); });
+    socket.on('diagnosticPing', reply => { if (typeof reply === 'function') reply(); });
     socket.on('welcome', player => {
         results.welcomed++;
         socket.emit('gotit', { ...player, name: `load${index}`, screenWidth: 1440, screenHeight: 900, target: { x: 0, y: 0 } });

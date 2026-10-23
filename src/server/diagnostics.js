@@ -5,6 +5,7 @@ const { performance, monitorEventLoopDelay } = require('perf_hooks');
 const MAX_HISTORY = 300;
 const MAX_CLIENTS = 100;
 const MAX_CLIENT_REPORTS = 12;
+const MAX_NETWORK_REPORTS = 60;
 
 const number = (value) => Number.isFinite(value) ? Math.max(0, Math.min(value, 1000000)) : 0;
 const round = (value) => Math.round(value * 10) / 10;
@@ -21,8 +22,9 @@ module.exports = function createDiagnostics(app, getState) {
 
     const history = [];
     const clients = new Map();
+    const sockets = new Map();
     const durations = { tick: [], send: [] };
-    let counters = { inputs: 0, snapshots: 0, backpressure: 0, sampledBytes: 0, byteSamples: 0 };
+    let counters = { inputs: 0, snapshots: 0, sentSnapshots: 0, droppedSnapshots: 0, backpressure: 0, sampledBytes: 0, byteSamples: 0, maxQueuedPackets: 0, maxBufferedBytes: 0 };
     let sampleNumber = 0;
     let previousCpu = process.cpuUsage();
     let previousTime = performance.now();
@@ -36,25 +38,76 @@ module.exports = function createDiagnostics(app, getState) {
         }
     }
 
+    function connectionState(socket) {
+        const conn = socket && socket.conn;
+        const transport = conn && conn.transport;
+        const ws = transport && transport.name === 'websocket' && transport.socket;
+        return {
+            transport: transport ? transport.name : 'unknown',
+            writable: Boolean(socket && socket.connected && transport && transport.writable),
+            queuedPackets: conn && Array.isArray(conn.writeBuffer) ? conn.writeBuffer.length : 0,
+            bufferedBytes: ws && Number.isFinite(ws.bufferedAmount) ? ws.bufferedAmount : null
+        };
+    }
+
     function recordSnapshot(socket, payload) {
         counters.snapshots++;
-        if (socket.conn && socket.conn.transport && socket.conn.transport.writable === false) {
-            counters.backpressure++;
+        const state = connectionState(socket);
+        const client = socket && clients.get(socket.id);
+        counters.maxQueuedPackets = Math.max(counters.maxQueuedPackets, state.queuedPackets);
+        if (state.bufferedBytes !== null) counters.maxBufferedBytes = Math.max(counters.maxBufferedBytes, state.bufferedBytes);
+        if (client) {
+            client.maxQueuedPackets = Math.max(client.maxQueuedPackets, state.queuedPackets);
+            if (state.bufferedBytes !== null) client.maxBufferedBytes = Math.max(client.maxBufferedBytes, state.bufferedBytes);
         }
+        if (!state.writable) {
+            counters.backpressure++;
+            counters.droppedSnapshots++;
+            if (client) client.droppedSnapshots++;
+            return false;
+        }
+        counters.sentSnapshots++;
+        if (client) client.sentSnapshots++;
         if (++sampleNumber % 40 === 0) {
             counters.sampledBytes += Buffer.byteLength(JSON.stringify(payload));
             counters.byteSamples++;
         }
+        return true;
     }
 
     function attachSocket(socket, role) {
+        sockets.set(socket.id, socket);
         clients.set(socket.id, {
             id: socket.id,
             role,
             connected: true,
             connectedAt: Date.now(),
-            reports: []
+            reports: [],
+            networkReports: [],
+            sentSnapshots: 0,
+            droppedSnapshots: 0,
+            maxQueuedPackets: 0,
+            maxBufferedBytes: 0,
+            rttMs: null,
+            rttTimeouts: 0,
+            lastInputAt: null,
+            inputs: 0
         });
+
+        const pingTimer = setInterval(() => {
+            if (!socket.connected) return;
+            const started = performance.now();
+            socket.timeout(4000).emit('diagnosticPing', error => {
+                const client = clients.get(socket.id);
+                if (!client || !client.connected) return;
+                if (error) {
+                    client.rttTimeouts++;
+                    client.rttMs = null;
+                } else {
+                    client.rttMs = round(performance.now() - started);
+                }
+            });
+        }, 5000);
 
         socket.on('clientDiagnostics', report => {
             if (!report || typeof report !== 'object') return;
@@ -76,6 +129,8 @@ module.exports = function createDiagnostics(app, getState) {
         });
 
         socket.on('disconnect', reason => {
+            clearInterval(pingTimer);
+            sockets.delete(socket.id);
             const client = clients.get(socket.id);
             if (!client) return;
             client.connected = false;
@@ -91,17 +146,48 @@ module.exports = function createDiagnostics(app, getState) {
         const cpu = process.cpuUsage(previousCpu);
         previousCpu = process.cpuUsage();
         const averageBytes = counters.byteSamples ? counters.sampledBytes / counters.byteSamples : 0;
+        const timestamp = Date.now();
+        const currentRtts = [];
+        for (const [id, socket] of sockets) {
+            const client = clients.get(id);
+            if (!client) continue;
+            const state = connectionState(socket);
+            client.networkReports.push({
+                at: timestamp,
+                ...state,
+                maxQueuedPackets: client.maxQueuedPackets,
+                maxBufferedBytes: client.maxBufferedBytes,
+                sentSnapshots: client.sentSnapshots,
+                droppedSnapshots: client.droppedSnapshots,
+                inputs: client.inputs,
+                inputAgeMs: client.lastInputAt === null ? null : timestamp - client.lastInputAt,
+                rttMs: client.rttMs,
+                rttTimeouts: client.rttTimeouts
+            });
+            if (client.networkReports.length > MAX_NETWORK_REPORTS) client.networkReports.shift();
+            if (client.rttMs !== null) currentRtts.push(client.rttMs);
+            client.sentSnapshots = 0;
+            client.droppedSnapshots = 0;
+            client.maxQueuedPackets = 0;
+            client.maxBufferedBytes = 0;
+            client.inputs = 0;
+        }
 
         history.push({
-            at: Date.now(),
+            at: timestamp,
             elapsedMs: round(elapsed),
             tick: { count: durations.tick.length, p95Ms: percentile(durations.tick, 0.95), maxMs: percentile(durations.tick, 1) },
             send: { count: durations.send.length, p95Ms: percentile(durations.send, 0.95), maxMs: percentile(durations.send, 1) },
             eventLoop: { p95Ms: round(eventLoop.percentile(95) / 1e6), maxMs: round(eventLoop.max / 1e6) },
             inputs: counters.inputs,
             snapshots: counters.snapshots,
-            estimatedSnapshotBytes: Math.round(averageBytes * counters.snapshots),
+            sentSnapshots: counters.sentSnapshots,
+            droppedSnapshots: counters.droppedSnapshots,
+            estimatedSnapshotBytes: Math.round(averageBytes * counters.sentSnapshots),
             backpressure: counters.backpressure,
+            maxQueuedPackets: counters.maxQueuedPackets,
+            maxBufferedBytes: counters.maxBufferedBytes,
+            rttP95Ms: percentile(currentRtts, 0.95),
             cpuPercentOfCore: round((cpu.user + cpu.system) / (elapsed * 10)),
             rssMb: round(process.memoryUsage().rss / 1048576),
             ...getState()
@@ -109,7 +195,7 @@ module.exports = function createDiagnostics(app, getState) {
         if (history.length > MAX_HISTORY) history.shift();
         durations.tick.length = 0;
         durations.send.length = 0;
-        counters = { inputs: 0, snapshots: 0, backpressure: 0, sampledBytes: 0, byteSamples: 0 };
+        counters = { inputs: 0, snapshots: 0, sentSnapshots: 0, droppedSnapshots: 0, backpressure: 0, sampledBytes: 0, byteSamples: 0, maxQueuedPackets: 0, maxBufferedBytes: 0 };
         eventLoop.reset();
 
         const staleBefore = Date.now() - 120000;
@@ -138,7 +224,14 @@ module.exports = function createDiagnostics(app, getState) {
         attachSocket,
         observeTick: work => observe('tick', work),
         observeSend: work => observe('send', work),
-        recordInput: () => { counters.inputs++; },
+        recordInput: socket => {
+            counters.inputs++;
+            const client = clients.get(socket.id);
+            if (client) {
+                client.lastInputAt = Date.now();
+                client.inputs++;
+            }
+        },
         recordSnapshot
     };
 };

@@ -220,7 +220,7 @@ const addPlayer = (socket) => {
 
     // Heartbeat function, update everytime.
     socket.on('0', (target) => {
-        diagnostics.recordInput();
+        diagnostics.recordInput(socket);
         currentPlayer.lastHeartbeat = new Date().getTime();
         if (target.x !== currentPlayer.x || target.y !== currentPlayer.y) {
             currentPlayer.target = target;
@@ -362,10 +362,13 @@ const gameloop = () => {
 const sendUpdates = () => {
     spectators.forEach(updateSpectator);
     map.enumerateWhatPlayersSee(function (playerData, visiblePlayers, visibleFood, visibleMass, visibleViruses) {
-        diagnostics.recordSnapshot(sockets[playerData.id], [playerData, visiblePlayers, visibleFood, visibleMass, visibleViruses]);
-        sockets[playerData.id].emit('serverTellPlayerMove', playerData, visiblePlayers, visibleFood, visibleMass, visibleViruses);
+        const playerSocket = sockets[playerData.id];
+        const payload = [playerData, visiblePlayers, visibleFood, visibleMass, visibleViruses];
+        if (diagnostics.recordSnapshot(playerSocket, payload)) {
+            playerSocket.volatile.emit('serverTellPlayerMove', ...payload);
+        }
         if (leaderboardChanged) {
-            sendLeaderboard(sockets[playerData.id]);
+            sendLeaderboard(playerSocket);
         }
     });
 
@@ -389,10 +392,12 @@ const updateSpectator = (socketID) => {
         name: ''
     };
     const payload = [playerData, map.players.data, map.food.data, map.massFood.data, map.viruses.data];
-    diagnostics.recordSnapshot(sockets[socketID], payload);
-    sockets[socketID].emit('serverTellPlayerMove', ...payload);
+    const spectatorSocket = sockets[socketID];
+    if (diagnostics.recordSnapshot(spectatorSocket, payload)) {
+        spectatorSocket.volatile.emit('serverTellPlayerMove', ...payload);
+    }
     if (leaderboardChanged) {
-        sendLeaderboard(sockets[socketID]);
+        sendLeaderboard(spectatorSocket);
     }
 }
 
