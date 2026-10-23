@@ -449,6 +449,8 @@ function animloop() {
 function getVisualPlayer(now) {
     var desiredX = player.x;
     var desiredY = player.y;
+    // A fresh welcome may arrive before the server has initialized the player.
+    if (!Number.isFinite(desiredX) || !Number.isFinite(desiredY)) return null;
     // Prediction changes only the camera and the local cell's drawing position.
     // The authoritative player and collision state are never modified here.
     if (global.playerType === 'player' && player.cells && player.cells.length === 1 && lastServerUpdateAt) {
@@ -468,7 +470,7 @@ function getVisualPlayer(now) {
             desiredY = Math.max(boundary, Math.min(global.game.height - boundary, desiredY));
         }
     }
-    if (visualX === null || visualY === null || now - lastVisualAt > 500) {
+    if (!Number.isFinite(visualX) || !Number.isFinite(visualY) || now - lastVisualAt > 500) {
         visualX = desiredX;
         visualY = desiredY;
     } else {
@@ -485,6 +487,7 @@ function gameLoop() {
         var viewPlayer = getVisualPlayer(Date.now());
         graph.fillStyle = global.backgroundColor;
         graph.fillRect(0, 0, global.screen.width, global.screen.height);
+        if (!viewPlayer) return;
 
         render.drawGrid(global, viewPlayer, global.screen, graph);
         foods.forEach(food => {
