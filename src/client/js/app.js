@@ -6,6 +6,30 @@ var global = require('./global');
 
 var playerNameInput = document.getElementById('playerNameInput');
 var socket;
+var lastTargetSentAt = 0;
+var lastTargetX = null;
+var lastTargetY = null;
+var lastServerUpdateAt = 0;
+var RESUME_TOKEN_KEY = 'agar1024ResumeToken';
+var RESUME_NAME_KEY = 'agar1024ResumeName';
+
+function readSession(key) {
+    try { return sessionStorage.getItem(key); } catch (error) { return null; }
+}
+
+function saveSession(token, name) {
+    try {
+        sessionStorage.setItem(RESUME_TOKEN_KEY, token);
+        sessionStorage.setItem(RESUME_NAME_KEY, name);
+    } catch (error) { /* Playing still works when storage is unavailable. */ }
+}
+
+function clearSession() {
+    try {
+        sessionStorage.removeItem(RESUME_TOKEN_KEY);
+        sessionStorage.removeItem(RESUME_NAME_KEY);
+    } catch (error) { /* Ignore unavailable storage. */ }
+}
 
 var debug = function (args) {
     if (console && console.log) {
@@ -19,6 +43,7 @@ if (/Android|webOS|iPhone|iPad|iPod|BlackBerry/i.test(navigator.userAgent)) {
 
 function startGame(type) {
     global.playerName = playerNameInput.value.replace(/(<([^>]+)>)/ig, '').substring(0, 25);
+    if (type === 'player' && readSession(RESUME_NAME_KEY) !== global.playerName) clearSession();
     global.playerType = type;
 
     global.screen.width = window.innerWidth;
@@ -32,7 +57,7 @@ function startGame(type) {
     }
     if (!global.animLoopHandle)
         animloop();
-    socket.emit('respawn');
+    socket.emit('respawn', { resumeToken: type === 'player' ? readSession(RESUME_TOKEN_KEY) : null });
     window.chat.socket = socket;
     window.chat.registerFunctions();
     window.canvas.socket = socket;
@@ -90,6 +115,12 @@ window.onload = function () {
             }
         }
     });
+
+    var savedName = readSession(RESUME_NAME_KEY);
+    if (savedName && readSession(RESUME_TOKEN_KEY)) {
+        playerNameInput.value = savedName;
+        startGame('player');
+    }
 };
 
 // TODO: Break out into GameControls.
@@ -149,14 +180,45 @@ document.getElementById('split').addEventListener('click', function () {
 });
 
 function handleDisconnect() {
-    socket.close();
-    if (!global.kicked) { // We have a more specific error message 
-        render.drawErrorMessage('连接已断开', graph, global.screen);
-    }
+    if (global.kicked) return;
+    global.gameStart = false;
+    var status = document.getElementById('connectionStatus');
+    status.textContent = '连接已断开，正在重连…';
+    status.hidden = false;
 }
+
+function sendTargetIfNeeded() {
+    if (!socket || !socket.connected) return;
+    var now = Date.now();
+    var target = window.canvas.target;
+    var changed = target.x !== lastTargetX || target.y !== lastTargetY;
+    if (now - lastTargetSentAt < (changed ? 50 : 250)) return;
+    socket.emit('0', target);
+    lastTargetSentAt = now;
+    lastTargetX = target.x;
+    lastTargetY = target.y;
+}
+
+window.setInterval(function () {
+    if (!global.gameStart || !lastServerUpdateAt || !socket) return;
+    var age = Date.now() - lastServerUpdateAt;
+    if (age > 2000) {
+        var status = document.getElementById('connectionStatus');
+        status.textContent = '游戏更新延迟，正在恢复…';
+        status.hidden = false;
+    }
+    if (age > 8000 && socket.connected) socket.io.engine.close();
+}, 500);
 
 // socket stuff.
 function setupSocket(socket) {
+    var hasConnected = false;
+    socket.on('connect', function () {
+        if (hasConnected && !global.kicked) {
+            socket.emit('respawn', { resumeToken: readSession(RESUME_TOKEN_KEY) });
+        }
+        hasConnected = true;
+    });
     // Handle ping.
     socket.on('pongcheck', function () {
         var latency = Date.now() - global.startPingTime;
@@ -166,12 +228,19 @@ function setupSocket(socket) {
 
     // Handle error.
     socket.on('connect_error', handleDisconnect);
-    socket.on('disconnect', handleDisconnect);
+    socket.on('disconnect', function (reason) {
+        handleDisconnect();
+        if (reason === 'io server disconnect' && !global.kicked) socket.connect();
+    });
 
     // Handle connection.
-    socket.on('welcome', function (playerSettings, gameSizes) {
+    socket.on('welcome', function (playerSettings, gameSizes, resume) {
+        var previousToken = readSession(RESUME_TOKEN_KEY);
+        if (global.playerType === 'player' && resume && resume.resumeToken) {
+            saveSession(resume.resumeToken, resume.resumed ? playerSettings.name : global.playerName);
+        }
         player = playerSettings;
-        player.name = global.playerName;
+        player.name = resume && resume.resumed ? playerSettings.name : global.playerName;
         player.screenWidth = global.screen.width;
         player.screenHeight = global.screen.height;
         player.target = window.canvas.target;
@@ -179,10 +248,16 @@ function setupSocket(socket) {
         window.chat.player = player;
         socket.emit('gotit', player);
         global.gameStart = true;
-        window.chat.addSystemLine('已进入游戏！');
+        lastServerUpdateAt = Date.now();
+        lastTargetSentAt = 0;
+        document.getElementById('connectionStatus').hidden = true;
+        window.chat.addSystemLine(resume && resume.resumed ? '连接已恢复，继续游戏！' : '已进入游戏！');
+        if (previousToken && resume && !resume.resumed) {
+            window.chat.addSystemLine('原游戏状态已过期，已重新开始。');
+        }
         window.chat.addSystemLine('输入 <b>-help</b> 查看命令。');
-        if (global.mobile) {
-            document.getElementById('gameAreaWrapper').removeChild(document.getElementById('chatbox'));
+        if (global.mobile && document.getElementById('chatbox').parentNode) {
+            document.getElementById('chatbox').remove();
         }
         c.focus();
         global.game.width = gameSizes.width;
@@ -238,6 +313,8 @@ function setupSocket(socket) {
 
     // Handle movement.
     socket.on('serverTellPlayerMove', function (playerData, userData, foodsList, massList, virusList) {
+        lastServerUpdateAt = Date.now();
+        document.getElementById('connectionStatus').hidden = true;
         if (global.playerType == 'player') {
             player.x = playerData.x;
             player.y = playerData.y;
@@ -253,6 +330,7 @@ function setupSocket(socket) {
 
     // Death.
     socket.on('RIP', function () {
+        clearSession();
         global.gameStart = false;
         render.drawErrorMessage('你被吃掉了！', graph, global.screen);
         window.setTimeout(() => {
@@ -266,6 +344,7 @@ function setupSocket(socket) {
     });
 
     socket.on('kick', function (reason) {
+        clearSession();
         global.gameStart = false;
         global.kicked = true;
         if (reason !== '') {
@@ -358,7 +437,7 @@ function gameLoop() {
         });
         render.drawCells(cellsToDraw, playerConfig, global.toggleMassState, borders, graph);
 
-        socket.emit('0', window.canvas.target); // playerSendTarget "Heartbeat".
+        sendTargetIfNeeded();
     }
 }
 

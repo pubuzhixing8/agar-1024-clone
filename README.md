@@ -35,6 +35,11 @@ You can check out how to play on our [wiki](https://github.com/owenashurst/agar.
 - Everytime a food particle is eaten by a player, **1** new food particle will respawn.
 - The more food you eat, the slower you move to make the game fairer for all.
 
+#### Reconnecting
+- A disconnected player can resume the same cells and mass within 60 seconds, including after a page refresh in the same browser tab.
+- The server pauses the player while disconnected. After 60 seconds, or after a server restart, joining starts a new round.
+- Being eaten or kicked does not preserve the previous round.
+
 ---
 
 ## Latest Changes

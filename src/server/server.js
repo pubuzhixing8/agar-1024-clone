@@ -5,7 +5,7 @@ const express = require('express');
 const app = express();
 const http = require('http').Server(app);
 const io = require('socket.io')(http);
-const SAT = require('sat');
+const crypto = require('crypto');
 
 const gameLogic = require('./game-logic');
 const loggingRepositry = require('./repositories/logging-repository');
@@ -19,12 +19,12 @@ let map = new mapUtils.Map(config);
 
 let sockets = {};
 let spectators = [];
+const disconnectedPlayers = new Map();
+const RESUME_WINDOW_MS = 60 * 1000;
 const INIT_MASS_LOG = util.mathLog(config.defaultPlayerMass, config.slowBase);
 
 let leaderboard = [];
 let leaderboardChanged = false;
-
-const Vector = SAT.Vector;
 
 app.use(express.static(__dirname + '/../client'));
 
@@ -50,11 +50,16 @@ function generateSpawnpoint() {
 
 
 const addPlayer = (socket) => {
-    var currentPlayer = new mapUtils.playerUtils.Player(socket.id);
+    let currentPlayer = new mapUtils.playerUtils.Player(socket.id);
+    let resuming = false;
 
     socket.on('gotit', function (clientPlayerData) {
+        if (!clientPlayerData || typeof clientPlayerData.name !== 'string') {
+            socket.disconnect();
+            return;
+        }
         console.log('[INFO] Player ' + clientPlayerData.name + ' connecting!');
-        currentPlayer.init(generateSpawnpoint(), config.defaultPlayerMass);
+        if (!resuming) currentPlayer.init(generateSpawnpoint(), config.defaultPlayerMass);
 
         if (map.players.findIndexByID(socket.id) > -1) {
             console.log('[INFO] Player ID is already connected, kicking.');
@@ -66,11 +71,12 @@ const addPlayer = (socket) => {
             console.log('[INFO] Player ' + clientPlayerData.name + ' connected!');
             sockets[socket.id] = socket;
 
-            const sanitizedName = clientPlayerData.name.replace(/(<([^>]+)>)/ig, '');
+            const sanitizedName = resuming ? currentPlayer.name : clientPlayerData.name.replace(/(<([^>]+)>)/ig, '');
             clientPlayerData.name = sanitizedName;
 
             currentPlayer.clientProvidedData(clientPlayerData);
             map.players.pushNew(currentPlayer);
+            resuming = false;
             io.emit('playerJoin', { name: currentPlayer.name });
             console.log('Total players: ' + map.players.data.length);
         }
@@ -86,17 +92,42 @@ const addPlayer = (socket) => {
         currentPlayer.screenHeight = data.screenHeight;
     });
 
-    socket.on('respawn', () => {
+    socket.on('respawn', (data) => {
         map.players.removePlayerByID(currentPlayer.id);
+        const token = data && typeof data.resumeToken === 'string' ? data.resumeToken : null;
+        const saved = token && disconnectedPlayers.get(token);
+        resuming = Boolean(saved);
+        if (saved) {
+            clearTimeout(saved.timeout);
+            disconnectedPlayers.delete(token);
+            currentPlayer = saved.player;
+            currentPlayer.id = socket.id;
+            currentPlayer.target = { x: 0, y: 0 };
+            currentPlayer.setLastHeartbeat();
+        } else {
+            currentPlayer = new mapUtils.playerUtils.Player(socket.id);
+            currentPlayer.resumeToken = crypto.randomBytes(32).toString('hex');
+        }
         socket.emit('welcome', currentPlayer, {
             width: config.gameWidth,
             height: config.gameHeight
+        }, {
+            resumed: resuming,
+            resumeToken: currentPlayer.resumeToken
         });
         console.log('[INFO] User ' + currentPlayer.name + ' has respawned');
     });
 
     socket.on('disconnect', () => {
-        map.players.removePlayerByID(currentPlayer.id);
+        if (map.players.findIndexByID(currentPlayer.id) > -1) {
+            map.players.removePlayerByID(currentPlayer.id);
+            const token = currentPlayer.resumeToken;
+            if (token && !socket.data.noResume) {
+                const timeout = setTimeout(() => disconnectedPlayers.delete(token), RESUME_WINDOW_MS);
+                disconnectedPlayers.set(token, { player: currentPlayer, timeout });
+            }
+        }
+        delete sockets[socket.id];
         console.log('[INFO] User ' + currentPlayer.name + ' has disconnected');
         socket.broadcast.emit('playerDisconnect', { name: currentPlayer.name });
     });
@@ -163,6 +194,7 @@ const addPlayer = (socket) => {
                     console.log('[ADMIN] User ' + player.name + ' kicked successfully by ' + currentPlayer.name);
                 }
                 socket.emit('serverMSG', 'User ' + player.name + ' was kicked by ' + currentPlayer.name);
+                sockets[player.id].data.noResume = true;
                 sockets[player.id].emit('kick', reason);
                 sockets[player.id].disconnect();
                 map.players.removePlayerByIndex(playerIndex);
@@ -213,14 +245,19 @@ const addSpectator = (socket) => {
 
 const tickPlayer = (currentPlayer) => {
     if (currentPlayer.lastHeartbeat < new Date().getTime() - config.maxHeartbeatInterval) {
-        sockets[currentPlayer.id].emit('kick', 'Last heartbeat received over ' + config.maxHeartbeatInterval + ' ago.');
         sockets[currentPlayer.id].disconnect();
+        return;
     }
 
-    currentPlayer.move(config.slowBase, config.gameWidth, config.gameHeight, INIT_MASS_LOG);
+    // Do not keep following an old direction while fresh input is delayed.
+    if (Date.now() - currentPlayer.lastHeartbeat < 1000) {
+        currentPlayer.move(config.slowBase, config.gameWidth, config.gameHeight, INIT_MASS_LOG);
+    }
 
     const isEntityInsideCircle = (point, circle) => {
-        return SAT.pointInCircle(new Vector(point.x, point.y), circle);
+        const dx = point.x - circle.pos.x;
+        const dy = point.y - circle.pos.y;
+        return dx * dx + dy * dy <= circle.r * circle.r;
     };
 
     const canEatMass = (cell, cellCircle, cellIndex, mass) => {
