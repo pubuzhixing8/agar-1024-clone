@@ -6,10 +6,13 @@ const base = process.argv[2] || 'http://localhost:3000';
 const count = Math.min(100, Math.max(1, Number(process.argv[3]) || 10));
 const seconds = Math.min(300, Math.max(5, Number(process.argv[4]) || 30));
 const clients = [];
-const results = { target: base, requestedPlayers: count, seconds, connected: 0, welcomed: 0, updates: 0, gapsOver100Ms: 0, gapsOver500Ms: 0, maxGapMs: 0, disconnects: {}, connectErrors: 0 };
+const perClient = [];
+const results = { target: base, requestedPlayers: count, seconds, connected: 0, welcomed: 0, deaths: 0, updates: 0, gapsOver100Ms: 0, gapsOver500Ms: 0, maxGapMs: 0, disconnects: {}, connectErrors: 0 };
 
 for (let index = 0; index < count; index++) {
     const socket = io(base, { query: { type: 'player' }, transports: ['websocket'], reconnection: false, timeout: 10000 });
+    const clientResult = { index, updates: 0, deaths: 0, maxGapMs: 0, gapsOver500Ms: 0 };
+    perClient.push(clientResult);
     let lastUpdate = 0;
     let moveTimer;
     socket.on('connect', () => { results.connected++; socket.emit('respawn', {}); });
@@ -23,12 +26,15 @@ for (let index = 0; index < count; index++) {
         if (lastUpdate) {
             const gap = now - lastUpdate;
             results.maxGapMs = Math.max(results.maxGapMs, gap);
+            clientResult.maxGapMs = Math.max(clientResult.maxGapMs, gap);
             if (gap > 100) results.gapsOver100Ms++;
-            if (gap > 500) results.gapsOver500Ms++;
+            if (gap > 500) { results.gapsOver500Ms++; clientResult.gapsOver500Ms++; }
         }
         lastUpdate = now;
         results.updates++;
+        clientResult.updates++;
     });
+    socket.on('RIP', () => { results.deaths++; clientResult.deaths++; });
     socket.on('connect_error', () => { results.connectErrors++; });
     socket.on('disconnect', reason => { results.disconnects[reason] = (results.disconnects[reason] || 0) + 1; clearInterval(moveTimer); });
     clients.push(socket);
@@ -36,6 +42,14 @@ for (let index = 0; index < count; index++) {
 
 setTimeout(async () => {
     for (const socket of clients) socket.disconnect();
+    const updateCounts = perClient.map(client => client.updates).sort((a, b) => a - b);
+    results.perClient = {
+        minUpdates: updateCounts[0],
+        medianUpdates: updateCounts[Math.floor(updateCounts.length / 2)],
+        maxUpdates: updateCounts[updateCounts.length - 1],
+        clientsWithNoUpdates: updateCounts.filter(count => count === 0).length,
+        worst: perClient.slice().sort((a, b) => a.updates - b.updates).slice(0, 5)
+    };
     try {
         const response = await fetch(`${base}/__diag/summary?seconds=${seconds}`);
         const summary = await response.json();
