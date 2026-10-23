@@ -11,6 +11,7 @@ const gameLogic = require('./game-logic');
 const loggingRepositry = require('./repositories/logging-repository');
 const chatRepository = require('./repositories/chat-repository');
 const config = require('../../config');
+const virusStyle = { fill: config.virus.fill, stroke: config.virus.stroke, strokeWidth: config.virus.strokeWidth };
 const util = require('./lib/util');
 const mapUtils = require('./map/map');
 const {getPosition} = require("./lib/entityUtils");
@@ -26,6 +27,10 @@ const INIT_MASS_LOG = util.mathLog(config.defaultPlayerMass, config.slowBase);
 
 let leaderboard = [];
 let leaderboardChanged = false;
+let snapshotSequence = 0;
+
+const compactFood = food => ({ x: food.x, y: food.y, radius: food.radius, hue: food.hue });
+const compactVirus = virus => ({ x: virus.x, y: virus.y, radius: virus.radius });
 
 const diagnostics = createDiagnostics(app, () => ({
     players: map.players.data.length,
@@ -87,6 +92,7 @@ const addPlayer = (socket) => {
             clientPlayerData.name = sanitizedName;
 
             currentPlayer.clientProvidedData(clientPlayerData);
+            currentPlayer.lastInputSeq = 0;
             map.players.pushNew(currentPlayer);
             resuming = false;
             io.emit('playerJoin', { name: currentPlayer.name });
@@ -126,7 +132,8 @@ const addPlayer = (socket) => {
             slowBase: config.slowBase,
             defaultPlayerMass: config.defaultPlayerMass,
             baseCellSpeed: config.baseCellSpeed,
-            maxSteeringRadius: config.maxSteeringRadius
+            maxSteeringRadius: config.maxSteeringRadius,
+            virusStyle
         }, {
             resumed: resuming,
             resumeToken: currentPlayer.resumeToken
@@ -226,6 +233,7 @@ const addPlayer = (socket) => {
     socket.on('0', (target) => {
         if (!target || !Number.isFinite(target.x) || !Number.isFinite(target.y)) return;
         diagnostics.recordInput(socket);
+        if (Number.isSafeInteger(target.seq) && target.seq >= 0) currentPlayer.lastInputSeq = target.seq;
         currentPlayer.lastHeartbeat = new Date().getTime();
         currentPlayer.setMergeHeld(target.mergeHeld === true);
         if (target.x !== currentPlayer.x || target.y !== currentPlayer.y) {
@@ -252,13 +260,19 @@ const addPlayer = (socket) => {
 const addSpectator = (socket) => {
     socket.on('gotit', function () {
         sockets[socket.id] = socket;
-        spectators.push(socket.id);
+        if (!spectators.includes(socket.id)) spectators.push(socket.id);
         io.emit('playerJoin', { name: '' });
+    });
+
+    socket.on('disconnect', () => {
+        delete sockets[socket.id];
+        spectators = spectators.filter(id => id !== socket.id);
     });
 
     socket.emit("welcome", {}, {
         width: config.gameWidth,
-        height: config.gameHeight
+        height: config.gameHeight,
+        virusStyle
     });
 }
 
@@ -366,10 +380,14 @@ const gameloop = () => {
 };
 
 const sendUpdates = () => {
-    spectators.forEach(updateSpectator);
-    map.enumerateWhatPlayersSee(function (playerData, visiblePlayers, visibleFood, visibleMass, visibleViruses) {
+    const sequence = ++snapshotSequence;
+    const serverAt = Date.now();
+    spectators.forEach(socketID => updateSpectator(socketID, sequence, serverAt));
+    map.enumerateWhatPlayersSee(function (playerData, visiblePlayers, visibleFood, visibleMass, visibleViruses, inputSeq) {
         const playerSocket = sockets[playerData.id];
-        const payload = [playerData, visiblePlayers, visibleFood, visibleMass, visibleViruses];
+        const payload = [playerData, visiblePlayers, visibleFood.map(compactFood), visibleMass,
+            visibleViruses.map(compactVirus),
+            { seq: sequence, inputSeq, serverAt }];
         if (diagnostics.recordSnapshot(playerSocket, payload)) {
             playerSocket.volatile.emit('serverTellPlayerMove', ...payload);
         }
@@ -387,7 +405,7 @@ const sendLeaderboard = (socket) => {
         leaderboard
     });
 }
-const updateSpectator = (socketID) => {
+const updateSpectator = (socketID, sequence, serverAt) => {
     let playerData = {
         x: config.gameWidth / 2,
         y: config.gameHeight / 2,
@@ -397,8 +415,10 @@ const updateSpectator = (socketID) => {
         id: socketID,
         name: ''
     };
-    const payload = [playerData, map.players.data, map.food.data, map.massFood.data, map.viruses.data];
     const spectatorSocket = sockets[socketID];
+    const payload = [playerData, map.players.data, map.food.data.map(compactFood), map.massFood.data,
+        map.viruses.data.map(compactVirus),
+        { seq: sequence, inputSeq: 0, serverAt }];
     if (diagnostics.recordSnapshot(spectatorSocket, payload)) {
         spectatorSocket.volatile.emit('serverTellPlayerMove', ...payload);
     }

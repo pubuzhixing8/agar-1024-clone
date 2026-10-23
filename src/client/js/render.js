@@ -15,10 +15,10 @@ const drawFood = (position, food, graph) => {
     drawRoundObject(position, food.radius, graph);
 };
 
-const drawVirus = (position, virus, graph) => {
-    graph.strokeStyle = virus.stroke;
-    graph.fillStyle = virus.fill;
-    graph.lineWidth = virus.strokeWidth;
+const drawVirus = (position, virus, graph, style) => {
+    graph.strokeStyle = style.stroke;
+    graph.fillStyle = style.fill;
+    graph.lineWidth = style.strokeWidth;
     let theta = 0;
     let sides = 20;
 

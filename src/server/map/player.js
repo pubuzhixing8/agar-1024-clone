@@ -13,6 +13,7 @@ const PUSHING_AWAY_SPEED = 1.1;
 const MERGE_TIMER = 15;
 const MERGE_PULL_SPEED = 10;
 const CENTER_MERGE_HOLD_MS = 1500;
+const HELD_CELL_SPACING = 0.85;
 
 class Cell {
     constructor(x, y, mass, speed) {
@@ -262,6 +263,33 @@ exports.Player = class {
         }
     }
 
+    spaceHeldCells(gameWidth, gameHeight) {
+        for (let pass = 0; pass < 4; pass++) {
+            for (let i = 0; i < this.cells.length; i++) {
+                for (let j = i + 1; j < this.cells.length; j++) {
+                    const a = this.cells[i];
+                    const b = this.cells[j];
+                    const dx = b.x - a.x;
+                    const dy = b.y - a.y;
+                    const distance = Math.hypot(dx, dy);
+                    const minimum = (a.radius + b.radius) * HELD_CELL_SPACING;
+                    if (distance >= minimum) continue;
+                    const offset = (minimum - distance) / 2;
+                    const angle = (i * 7 + j * 13) * 2.4;
+                    const ux = distance ? dx / distance : Math.cos(angle);
+                    const uy = distance ? dy / distance : Math.sin(angle);
+                    a.x -= ux * offset;
+                    a.y -= uy * offset;
+                    b.x += ux * offset;
+                    b.y += uy * offset;
+                }
+            }
+        }
+        for (const cell of this.cells) {
+            gameLogic.adjustForBoundaries(cell, cell.radius / 3, 0, gameWidth, gameHeight);
+        }
+    }
+
     mergeAllCells() {
         const totalMass = this.cells.reduce((sum, cell) => sum + cell.mass, 0);
         const x = this.cells.reduce((sum, cell) => sum + cell.x * cell.mass, 0) / totalMass;
@@ -295,12 +323,16 @@ exports.Player = class {
 
         if ((canMerge || this.mergeHeld) && this.cells.length > 1) this.pullCellsTogether();
 
-        let xSum = 0, ySum = 0;
         for (let i = 0; i < this.cells.length; i++) {
             let cell = this.cells[i];
             cell.move(this.x, this.y, this.target, slowBase, initMassLog);
             gameLogic.adjustForBoundaries(cell, cell.radius/3, 0, gameWidth, gameHeight);
-
+        }
+        if (this.mergeHeld && !canMerge && this.cells.length > 1) {
+            this.spaceHeldCells(gameWidth, gameHeight);
+        }
+        let xSum = 0, ySum = 0;
+        for (const cell of this.cells) {
             xSum += cell.x;
             ySum += cell.y;
         }

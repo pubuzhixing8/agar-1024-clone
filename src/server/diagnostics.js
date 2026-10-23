@@ -6,8 +6,10 @@ const MAX_HISTORY = 300;
 const MAX_CLIENTS = 100;
 const MAX_CLIENT_REPORTS = 12;
 const MAX_NETWORK_REPORTS = 60;
+const MAX_CLIENT_SPIKES = 6;
 
 const number = (value) => Number.isFinite(value) ? Math.max(0, Math.min(value, 1000000)) : 0;
+const timestamp = (value) => Number.isSafeInteger(value) && value >= 0 && value < 10000000000000 ? value : 0;
 const round = (value) => Math.round(value * 10) / 10;
 
 function percentile(values, fraction) {
@@ -83,6 +85,7 @@ module.exports = function createDiagnostics(app, getState) {
             connected: true,
             connectedAt: Date.now(),
             reports: [],
+            spikes: [],
             networkReports: [],
             sentSnapshots: 0,
             droppedSnapshots: 0,
@@ -122,10 +125,38 @@ module.exports = function createDiagnostics(app, getState) {
                 inputs: number(report.inputs),
                 maxUpdateGapMs: number(report.maxUpdateGapMs),
                 maxFrameGapMs: number(report.maxFrameGapMs),
+                missingSnapshots: number(report.missingSnapshots),
+                maxInputAckMs: number(report.maxInputAckMs),
+                maxDeliverySkewMs: number(report.maxDeliverySkewMs),
                 lastUpdateAgeMs: number(report.lastUpdateAgeMs),
                 transport: report.transport === 'websocket' ? 'websocket' : 'polling'
             });
             if (client.reports.length > MAX_CLIENT_REPORTS) client.reports.shift();
+        });
+
+        socket.on('clientDiagnosticsSpike', report => {
+            if (!report || typeof report !== 'object') return;
+            const client = clients.get(socket.id);
+            if (!client) return;
+            const event = entry => ({
+                at: timestamp(entry.at),
+                kind: ['input', 'update', 'frameGap'].includes(entry.kind) ? entry.kind : 'unknown',
+                seq: number(entry.seq),
+                serverAt: timestamp(entry.serverAt),
+                inputSeq: number(entry.inputSeq),
+                gapMs: number(entry.gapMs),
+                serverGapMs: number(entry.serverGapMs),
+                inputAckMs: number(entry.inputAckMs)
+            });
+            client.spikes.push({
+                receivedAt: Date.now(),
+                clientAt: timestamp(report.at),
+                updateGapMs: number(report.updateGapMs),
+                before: Array.isArray(report.before) ? report.before.slice(-120).filter(x => x && typeof x === 'object').map(event) : [],
+                after: Array.isArray(report.after) ? report.after.slice(0, 80).filter(x => x && typeof x === 'object').map(event) : [],
+                transport: report.transport === 'websocket' ? 'websocket' : 'polling'
+            });
+            if (client.spikes.length > MAX_CLIENT_SPIKES) client.spikes.shift();
         });
 
         socket.on('disconnect', reason => {

@@ -17,9 +17,17 @@ var movementSlowBase = 4.5;
 var movementInitialMass = 10;
 var movementBaseSpeed = 6.25;
 var maxSteeringRadius = Infinity;
+var virusStyle;
 var diagnosticsWindowStartedAt = Date.now();
 var diagnosticsLastFrameAt = 0;
-var diagnosticsCounters = { updates: 0, frames: 0, inputs: 0, maxUpdateGapMs: 0, maxFrameGapMs: 0 };
+var diagnosticsCounters = { updates: 0, frames: 0, inputs: 0, maxUpdateGapMs: 0, maxFrameGapMs: 0,
+    missingSnapshots: 0, maxInputAckMs: 0, maxDeliverySkewMs: 0 };
+var inputSequence = 0;
+var lastSnapshotSequence = 0;
+var lastSnapshotServerAt = 0;
+var pendingInputTimes = new Map();
+var diagnosticEvents = [];
+var lastSpikeAt = 0;
 var RESUME_TOKEN_KEY = 'agar1024ResumeToken';
 var RESUME_NAME_KEY = 'agar1024ResumeName';
 
@@ -199,6 +207,31 @@ function handleDisconnect() {
     status.hidden = false;
 }
 
+function recordDiagnosticEvent(event) {
+    event.at = Date.now();
+    diagnosticEvents.push(event);
+    while (diagnosticEvents.length > 200 || diagnosticEvents[0].at < event.at - 5000) {
+        diagnosticEvents.shift();
+    }
+}
+
+function captureUpdateSpike(gapMs, at) {
+    if (!socket || at - lastSpikeAt < 10000) return;
+    lastSpikeAt = at;
+    var before = diagnosticEvents.filter(event => event.at >= at - 3000);
+    window.setTimeout(function () {
+        var spike = {
+            at: at,
+            updateGapMs: gapMs,
+            before: before,
+            after: diagnosticEvents.filter(event => event.at > at && event.at <= at + 2000),
+            transport: socket.io.engine && socket.io.engine.transport ? socket.io.engine.transport.name : 'unknown'
+        };
+        console.warn('[game-diagnostics] update gap', spike);
+        if (socket.connected) socket.emit('clientDiagnosticsSpike', spike);
+    }, 2000);
+}
+
 function sendTargetIfNeeded() {
     if (!global.gameStart || !socket || !socket.connected) return;
     var now = Date.now();
@@ -206,11 +239,19 @@ function sendTargetIfNeeded() {
     var changed = target.x !== lastTargetX || target.y !== lastTargetY;
     if (now - lastTargetSentAt < (changed ? 50 : 250)) return;
     // Only the newest direction matters after a slow connection recovers.
+    var sequence = ++inputSequence;
     socket.volatile.emit('0', {
         x: target.x,
         y: target.y,
-        mergeHeld: window.canvas.pointerInside && Math.hypot(target.x, target.y) <= 60
+        mergeHeld: window.canvas.pointerInside && Math.hypot(target.x, target.y) <= 60,
+        seq: sequence
     });
+    pendingInputTimes.set(sequence, now);
+    for (var [oldSequence, sentAt] of pendingInputTimes) {
+        if (sentAt >= now - 10000) break;
+        pendingInputTimes.delete(oldSequence);
+    }
+    recordDiagnosticEvent({ kind: 'input', seq: sequence });
     diagnosticsCounters.inputs++;
     lastTargetSentAt = now;
     lastTargetX = target.x;
@@ -241,6 +282,9 @@ window.setInterval(function () {
         inputs: diagnosticsCounters.inputs,
         maxUpdateGapMs: diagnosticsCounters.maxUpdateGapMs,
         maxFrameGapMs: diagnosticsCounters.maxFrameGapMs,
+        missingSnapshots: diagnosticsCounters.missingSnapshots,
+        maxInputAckMs: diagnosticsCounters.maxInputAckMs,
+        maxDeliverySkewMs: diagnosticsCounters.maxDeliverySkewMs,
         lastUpdateAgeMs: lastServerUpdateAt ? now - lastServerUpdateAt : 0,
         transport: socket.io.engine && socket.io.engine.transport ? socket.io.engine.transport.name : 'unknown'
     };
@@ -248,7 +292,8 @@ window.setInterval(function () {
     console.info('[game-diagnostics]', report);
     if (socket.connected) socket.emit('clientDiagnostics', report);
     diagnosticsWindowStartedAt = now;
-    diagnosticsCounters = { updates: 0, frames: 0, inputs: 0, maxUpdateGapMs: 0, maxFrameGapMs: 0 };
+    diagnosticsCounters = { updates: 0, frames: 0, inputs: 0, maxUpdateGapMs: 0, maxFrameGapMs: 0,
+        missingSnapshots: 0, maxInputAckMs: 0, maxDeliverySkewMs: 0 };
 }, 5000);
 
 // socket stuff.
@@ -295,12 +340,18 @@ function setupSocket(socket) {
         global.gameStart = true;
         lastServerUpdateAt = Date.now();
         lastTargetSentAt = 0;
+        inputSequence = 0;
+        lastSnapshotSequence = 0;
+        lastSnapshotServerAt = 0;
+        pendingInputTimes.clear();
+        diagnosticEvents = [];
         visualX = null;
         visualY = null;
         movementSlowBase = gameSizes.slowBase || 4.5;
         movementInitialMass = gameSizes.defaultPlayerMass || 10;
         movementBaseSpeed = gameSizes.baseCellSpeed || 6.25;
         maxSteeringRadius = gameSizes.maxSteeringRadius || Infinity;
+        virusStyle = gameSizes.virusStyle;
         document.getElementById('connectionStatus').hidden = true;
         window.chat.addSystemLine(resume && resume.resumed ? '连接已恢复，继续游戏！' : '已进入游戏！');
         if (previousToken && resume && !resume.resumed) {
@@ -363,9 +414,38 @@ function setupSocket(socket) {
     });
 
     // Handle movement.
-    socket.on('serverTellPlayerMove', function (playerData, userData, foodsList, massList, virusList) {
+    socket.on('serverTellPlayerMove', function (playerData, userData, foodsList, massList, virusList, metadata) {
         var updateAt = Date.now();
-        if (lastServerUpdateAt) diagnosticsCounters.maxUpdateGapMs = Math.max(diagnosticsCounters.maxUpdateGapMs, updateAt - lastServerUpdateAt);
+        var updateGapMs = lastServerUpdateAt ? updateAt - lastServerUpdateAt : 0;
+        diagnosticsCounters.maxUpdateGapMs = Math.max(diagnosticsCounters.maxUpdateGapMs, updateGapMs);
+        var inputAckMs = null;
+        var serverGapMs = null;
+        if (metadata && Number.isSafeInteger(metadata.seq)) {
+            if (lastSnapshotSequence && metadata.seq > lastSnapshotSequence + 1) {
+                diagnosticsCounters.missingSnapshots += metadata.seq - lastSnapshotSequence - 1;
+            }
+            lastSnapshotSequence = metadata.seq;
+            if (Number.isFinite(metadata.serverAt)) {
+                if (lastSnapshotServerAt) {
+                    serverGapMs = metadata.serverAt - lastSnapshotServerAt;
+                    diagnosticsCounters.maxDeliverySkewMs = Math.max(diagnosticsCounters.maxDeliverySkewMs,
+                        updateGapMs - serverGapMs);
+                }
+                lastSnapshotServerAt = metadata.serverAt;
+            }
+            if (pendingInputTimes.has(metadata.inputSeq)) {
+                inputAckMs = updateAt - pendingInputTimes.get(metadata.inputSeq);
+                diagnosticsCounters.maxInputAckMs = Math.max(diagnosticsCounters.maxInputAckMs, inputAckMs);
+                for (var oldSequence of pendingInputTimes.keys()) {
+                    if (oldSequence > metadata.inputSeq) break;
+                    pendingInputTimes.delete(oldSequence);
+                }
+            }
+        }
+        recordDiagnosticEvent({ kind: 'update', seq: metadata && metadata.seq,
+            serverAt: metadata && metadata.serverAt, inputSeq: metadata && metadata.inputSeq,
+            gapMs: updateGapMs, serverGapMs: serverGapMs, inputAckMs: inputAckMs });
+        if (updateGapMs > 200) captureUpdateSpike(updateGapMs, updateAt);
         diagnosticsCounters.updates++;
         lastServerUpdateAt = updateAt;
         document.getElementById('connectionStatus').hidden = true;
@@ -441,6 +521,9 @@ function animloop() {
     global.animLoopHandle = window.requestAnimFrame(animloop);
     var frameAt = Date.now();
     if (diagnosticsLastFrameAt) diagnosticsCounters.maxFrameGapMs = Math.max(diagnosticsCounters.maxFrameGapMs, frameAt - diagnosticsLastFrameAt);
+    if (diagnosticsLastFrameAt && frameAt - diagnosticsLastFrameAt > 50) {
+        recordDiagnosticEvent({ kind: 'frameGap', gapMs: frameAt - diagnosticsLastFrameAt });
+    }
     diagnosticsLastFrameAt = frameAt;
     diagnosticsCounters.frames++;
     gameLoop();
@@ -500,7 +583,7 @@ function gameLoop() {
         });
         viruses.forEach(virus => {
             let position = getPosition(virus, viewPlayer, global.screen);
-            render.drawVirus(position, virus, graph);
+            render.drawVirus(position, virus, graph, virusStyle);
         });
 
 

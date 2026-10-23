@@ -7,6 +7,6 @@ export class AgarGame extends Container {
 
 export default {
   fetch(request, env) {
-    return getContainer(env.AGAR_GAME, 'event-1024-apac-diag').fetch(request);
+    return getContainer(env.AGAR_GAME, 'event-1024-apac-compact-v2').fetch(request);
   },
 };

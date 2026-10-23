@@ -64,7 +64,8 @@ exports.Map = class {
                 }
             }
 
-            callback(extractData(currentPlayer), visiblePlayers, visibleFood, visibleMass, visibleViruses);
+            callback(extractData(currentPlayer), visiblePlayers, visibleFood, visibleMass, visibleViruses,
+                currentPlayer.lastInputSeq || 0);
         }
     }
 }

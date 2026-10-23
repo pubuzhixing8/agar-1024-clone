@@ -29,7 +29,7 @@ module.exports = {
     slowBase: 30,
     maxSteeringRadius: 150,
     logChat: 0,
-    networkUpdateFactor: 40,
+    networkUpdateFactor: 30,
     maxHeartbeatInterval: 15000,
     foodUniformDisposition: true,
     newPlayerInitialPosition: "farthest",
