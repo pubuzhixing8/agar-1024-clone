@@ -10,6 +10,9 @@ var lastTargetSentAt = 0;
 var lastTargetX = null;
 var lastTargetY = null;
 var lastServerUpdateAt = 0;
+var diagnosticsWindowStartedAt = Date.now();
+var diagnosticsLastFrameAt = 0;
+var diagnosticsCounters = { updates: 0, frames: 0, inputs: 0, maxUpdateGapMs: 0, maxFrameGapMs: 0 };
 var RESUME_TOKEN_KEY = 'agar1024ResumeToken';
 var RESUME_NAME_KEY = 'agar1024ResumeName';
 
@@ -194,6 +197,7 @@ function sendTargetIfNeeded() {
     var changed = target.x !== lastTargetX || target.y !== lastTargetY;
     if (now - lastTargetSentAt < (changed ? 50 : 250)) return;
     socket.emit('0', target);
+    diagnosticsCounters.inputs++;
     lastTargetSentAt = now;
     lastTargetX = target.x;
     lastTargetY = target.y;
@@ -209,6 +213,26 @@ window.setInterval(function () {
     }
     if (age > 8000 && socket.connected) socket.io.engine.close();
 }, 500);
+
+window.setInterval(function () {
+    if (!socket || !global.gameStart) return;
+    var now = Date.now();
+    var report = {
+        windowMs: now - diagnosticsWindowStartedAt,
+        updates: diagnosticsCounters.updates,
+        frames: diagnosticsCounters.frames,
+        inputs: diagnosticsCounters.inputs,
+        maxUpdateGapMs: diagnosticsCounters.maxUpdateGapMs,
+        maxFrameGapMs: diagnosticsCounters.maxFrameGapMs,
+        lastUpdateAgeMs: lastServerUpdateAt ? now - lastServerUpdateAt : 0,
+        transport: socket.io.engine && socket.io.engine.transport ? socket.io.engine.transport.name : 'unknown'
+    };
+    window.__agarDiagnostics = report;
+    console.info('[game-diagnostics]', report);
+    if (socket.connected) socket.emit('clientDiagnostics', report);
+    diagnosticsWindowStartedAt = now;
+    diagnosticsCounters = { updates: 0, frames: 0, inputs: 0, maxUpdateGapMs: 0, maxFrameGapMs: 0 };
+}, 5000);
 
 // socket stuff.
 function setupSocket(socket) {
@@ -229,6 +253,7 @@ function setupSocket(socket) {
     // Handle error.
     socket.on('connect_error', handleDisconnect);
     socket.on('disconnect', function (reason) {
+        console.warn('[game-diagnostics] disconnected', { reason: reason, lastUpdateAgeMs: lastServerUpdateAt ? Date.now() - lastServerUpdateAt : 0 });
         handleDisconnect();
         if (reason === 'io server disconnect' && !global.kicked) socket.connect();
     });
@@ -313,7 +338,10 @@ function setupSocket(socket) {
 
     // Handle movement.
     socket.on('serverTellPlayerMove', function (playerData, userData, foodsList, massList, virusList) {
-        lastServerUpdateAt = Date.now();
+        var updateAt = Date.now();
+        if (lastServerUpdateAt) diagnosticsCounters.maxUpdateGapMs = Math.max(diagnosticsCounters.maxUpdateGapMs, updateAt - lastServerUpdateAt);
+        diagnosticsCounters.updates++;
+        lastServerUpdateAt = updateAt;
         document.getElementById('connectionStatus').hidden = true;
         if (global.playerType == 'player') {
             player.x = playerData.x;
@@ -383,6 +411,10 @@ window.cancelAnimFrame = (function (handle) {
 
 function animloop() {
     global.animLoopHandle = window.requestAnimFrame(animloop);
+    var frameAt = Date.now();
+    if (diagnosticsLastFrameAt) diagnosticsCounters.maxFrameGapMs = Math.max(diagnosticsCounters.maxFrameGapMs, frameAt - diagnosticsLastFrameAt);
+    diagnosticsLastFrameAt = frameAt;
+    diagnosticsCounters.frames++;
     gameLoop();
 }
 

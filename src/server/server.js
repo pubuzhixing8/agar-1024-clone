@@ -14,6 +14,7 @@ const config = require('../../config');
 const util = require('./lib/util');
 const mapUtils = require('./map/map');
 const {getPosition} = require("./lib/entityUtils");
+const createDiagnostics = require('./diagnostics');
 
 let map = new mapUtils.Map(config);
 
@@ -26,10 +27,21 @@ const INIT_MASS_LOG = util.mathLog(config.defaultPlayerMass, config.slowBase);
 let leaderboard = [];
 let leaderboardChanged = false;
 
+const diagnostics = createDiagnostics(app, () => ({
+    players: map.players.data.length,
+    spectatorListLength: spectators.length,
+    connectedSpectators: spectators.filter(id => sockets[id] && sockets[id].connected).length,
+    socketReferences: Object.keys(sockets).length,
+    food: map.food.data.length,
+    viruses: map.viruses.data.length,
+    massFood: map.massFood.data.length
+}));
+
 app.use(express.static(__dirname + '/../client'));
 
 io.on('connection', function (socket) {
     let type = socket.handshake.query.type;
+    diagnostics.attachSocket(socket, type);
     console.log('User has connected: ', type);
     switch (type) {
         case 'player':
@@ -208,6 +220,7 @@ const addPlayer = (socket) => {
 
     // Heartbeat function, update everytime.
     socket.on('0', (target) => {
+        diagnostics.recordInput();
         currentPlayer.lastHeartbeat = new Date().getTime();
         if (target.x !== currentPlayer.x || target.y !== currentPlayer.y) {
             currentPlayer.target = target;
@@ -349,6 +362,7 @@ const gameloop = () => {
 const sendUpdates = () => {
     spectators.forEach(updateSpectator);
     map.enumerateWhatPlayersSee(function (playerData, visiblePlayers, visibleFood, visibleMass, visibleViruses) {
+        diagnostics.recordSnapshot(sockets[playerData.id], [playerData, visiblePlayers, visibleFood, visibleMass, visibleViruses]);
         sockets[playerData.id].emit('serverTellPlayerMove', playerData, visiblePlayers, visibleFood, visibleMass, visibleViruses);
         if (leaderboardChanged) {
             sendLeaderboard(sockets[playerData.id]);
@@ -374,15 +388,17 @@ const updateSpectator = (socketID) => {
         id: socketID,
         name: ''
     };
-    sockets[socketID].emit('serverTellPlayerMove', playerData, map.players.data, map.food.data, map.massFood.data, map.viruses.data);
+    const payload = [playerData, map.players.data, map.food.data, map.massFood.data, map.viruses.data];
+    diagnostics.recordSnapshot(sockets[socketID], payload);
+    sockets[socketID].emit('serverTellPlayerMove', ...payload);
     if (leaderboardChanged) {
         sendLeaderboard(sockets[socketID]);
     }
 }
 
-setInterval(tickGame, 1000 / 60);
+setInterval(() => diagnostics.observeTick(tickGame), 1000 / 60);
 setInterval(gameloop, 1000);
-setInterval(sendUpdates, 1000 / config.networkUpdateFactor);
+setInterval(() => diagnostics.observeSend(sendUpdates), 1000 / config.networkUpdateFactor);
 
 // Don't touch, IP configurations.
 var ipaddress = process.env.OPENSHIFT_NODEJS_IP || process.env.IP || config.host;
